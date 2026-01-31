@@ -1,0 +1,391 @@
+# PulseTrader.01 Main Configuration
+# All settings can be overridden per-account
+
+version: "1.0.0"
+
+# Account Configuration
+accounts:
+  default:
+    account_id: "" # Set via environment variable ALPACA_ACCOUNT_ID
+    type: "main" # main | custodial
+    name: "Primary Trading Account"
+    enabled: true
+    
+    # Risk Configuration
+    risk:
+      # Starting equity tier determines base risk parameters
+      current_tier: "tier_100_25k" # auto-detected on startup
+      
+      # Reserve (MANDATORY - never violated)
+      reserve_percentage: 20.0 # Always 20% across all tiers
+      
+      # Tier-based risk parameters (per-trade % of available equity)
+      tiers:
+        tier_0_100:
+          range: [0, 100]
+          per_trade_min: 60.0
+          per_trade_max: 100.0
+          daily_max_drawdown: 15.0
+          aggression: "extreme"
+        
+        tier_100_25k:
+          range: [100, 25000]
+          per_trade_min: 8.0
+          per_trade_max: 15.0
+          daily_max_drawdown: 6.0
+          aggression: "high"
+        
+        tier_25k_150k:
+          range: [25000, 150000]
+          per_trade_min: 5.0
+          per_trade_max: 10.0
+          daily_max_drawdown: 6.0
+          aggression: "moderate"
+        
+        tier_150k_500k:
+          range: [150000, 500000]
+          per_trade_min: 3.0
+          per_trade_max: 6.0
+          daily_max_drawdown: 6.0
+          aggression: "balanced"
+        
+        tier_500k_1m:
+          range: [500000, 1000000]
+          per_trade_min: 2.0
+          per_trade_max: 5.0
+          daily_max_drawdown: 5.0
+          aggression: "conservative"
+        
+        tier_1m_plus:
+          range: [1000000, 999999999]
+          per_trade_min: 1.5
+          per_trade_max: 4.0
+          daily_max_drawdown: 4.0
+          aggression: "wealth_preservation"
+      
+      # Position limits (concurrency)
+      max_positions:
+        crypto: 3
+        etf: 1
+        stock: 2 # Only active when equity >= 25k
+      
+      # Milestone floors (auto-calculated and enforced)
+      milestone_floors:
+        enabled: true
+        thresholds: [32000, 150000, 500000, 1000000]
+        floor_percentage: 93.75 # 6.25% drawdown from milestone allowed
+    
+    # Dividend Configuration
+    dividend:
+      enabled: true
+      suspend_until_equity: 5000 # No dividend buying below this
+      
+      allocation_tiers:
+        - equity_min: 5000
+          equity_max: 24999
+          weekly_percentage: 3.0
+        
+        - equity_min: 25000
+          equity_max: 999999
+          weekly_percentage: 10.0
+        
+        - equity_min: 1000000
+          equity_max: 999999999
+          weekly_percentage: 20.0
+      
+      # Monday allocation strategy
+      monday_allocation:
+        enabled: true
+        execution_time: "09:30:00" # ET
+        timeout_minutes: 60
+        force_fill_time: "10:30:00" # Force buy remaining at market
+        
+        order_types:
+          bullish: "market_on_open"
+          neutral: "vwap_slice"
+          bearish: "limit_below_open"
+      
+      # Dividend universe (diversified portfolio)
+      universe:
+        - "SCHD" # Schwab US Dividend Equity ETF
+        - "VYM"  # Vanguard High Dividend Yield ETF
+        - "JEPI" # JPMorgan Equity Premium Income ETF
+        - "JEPQ" # JPMorgan Nasdaq Equity Premium Income ETF
+        - "DGRO" # iShares Core Dividend Growth ETF
+        - "DIVO" # Amplify CWP Enhanced Dividend Income ETF
+        - "SPYD" # SPDR Portfolio S&P 500 High Dividend ETF
+        - "O"    # Realty Income Corporation
+      
+      reinvest_dividends: true
+      min_diversification: 3 # Minimum number of holdings
+
+# Strategy Configuration
+strategies:
+  # Crypto Momentum (24/7 fast compounding)
+  crypto_momentum:
+    enabled: true
+    priority: 1
+    
+    # Asset universe
+    assets:
+      - "BTC/USD"
+      - "ETH/USD"
+      - "SOL/USD"
+    
+    # Timeframes
+    timeframes: ["5m", "15m"]
+    
+    # Entry conditions
+    entry:
+      price_above_ema21: true
+      price_above_vwap: true
+      volume_impulse_multiplier: 1.5 # vs 20-bar average
+      min_volume_threshold: 1000000 # USD volume
+    
+    # Exit conditions
+    exit:
+      targets: [2.0, 4.0, 6.0] # Percentage targets
+      trailing_stop:
+        enabled: true
+        activation_pct: 2.0 # Activate after 2% profit
+        trailing_pct: 1.0 # Trail by 1%
+      hard_stop_pct: -1.5 # Initial hard stop
+      
+      # Pyramiding (add to winners)
+      pyramid:
+        enabled: true
+        add_after_profit_pct: 2.0
+        additional_size_pct: 50.0 # 50% of original position
+        move_stop_to_breakeven: true
+  
+  # Leveraged ETF Trend
+  leveraged_etf_trend:
+    enabled: true
+    priority: 2
+    
+    assets:
+      # 3x Bull ETFs
+      - "TQQQ" # Nasdaq 3x
+      - "SPXL" # S&P 500 3x
+      - "SOXL" # Semiconductors 3x
+      - "UDOW" # Dow 3x
+      # 3x Bear ETFs
+      - "SQQQ" # Nasdaq -3x
+      - "SPXS" # S&P 500 -3x
+      - "SOXS" # Semiconductors -3x
+      - "SDOW" # Dow -3x
+    
+    timeframes: ["5m", "15m"]
+    
+    entry:
+      ema8_above_ema21: true
+      major_index_rising: true # SPY/QQQ must be trending
+      volume_confirmation: true
+    
+    exit:
+      targets: [2.0, 3.0, 4.0]
+      hard_stop_pct: -2.0
+      trailing_stop:
+        enabled: true
+        activation_pct: 2.0
+        trailing_pct: 1.0
+  
+  # Stock Swing (disabled until >= $25k)
+  stock_swing:
+    enabled: false # Auto-enabled when equity >= 25k
+    priority: 3
+    
+    min_equity_required: 25000
+    min_hold_days: 1 # PDT compliance
+    
+    entry:
+      technical_score_min: 7.0 # Out of 10
+      volume_confirmation: true
+    
+    exit:
+      targets: [10.0, 15.0, 20.0]
+      hard_stop_pct: -4.0
+      max_hold_days: 5
+
+# PDT (Pattern Day Trading) Compliance
+pdt:
+  enabled: true
+  threshold_equity: 25000
+  
+  # Pre-PDT behavior (equity < $25k)
+  pre_pdt:
+    disable_stock_trading: true
+    min_stock_hold_days: 1
+    focus_assets: ["crypto", "leveraged_etf"]
+  
+  # Post-PDT behavior (equity >= $25k)
+  post_pdt:
+    enable_stock_trading: true
+    remove_hold_restrictions: false # Still apply 1-day min for safety
+    increase_position_frequency: true
+
+# Learning and Adaptation
+learning:
+  enabled: true
+  
+  # End-of-day analysis
+  eod_analysis:
+    enabled: true
+    execution_time: "16:30:00" # ET, after market close
+    
+    metrics:
+      - "pnl"
+      - "win_rate"
+      - "expectancy"
+      - "max_drawdown"
+      - "sharpe_ratio"
+      - "sortino_ratio"
+    
+    # Strategy reweighting
+    reweight:
+      enabled: true
+      lookback_days: 7
+      min_trades_required: 10
+      adjustment_limit_pct: 15.0 # Max adjustment per day
+  
+  # Performance tracking
+  tracking:
+    store_all_signals: true
+    store_rejected_trades: true
+    performance_db: "data/performance.db"
+
+# Data Management
+data:
+  # Historical data storage
+  storage:
+    format: "parquet"
+    database: "duckdb"
+    location: "data/market_data.db"
+  
+  # Data sources
+  sources:
+    price_data:
+      provider: "yfinance" # Free tier
+      update_frequency: "1m" # Real-time via websocket for active trading
+      historical_years: 5
+    
+    fundamental_data:
+      rss_feeds:
+        - "https://feeds.finance.yahoo.com/rss/2.0/headline"
+        - "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&CIK=&type=&company=&dateb=&owner=include&start=0&count=100&output=atom"
+      
+      sec_filings:
+        enabled: true
+        filing_types: ["8-K", "10-K", "10-Q", "S-1"]
+  
+  # Market hours
+  market_hours:
+    stock:
+      open: "09:30:00"
+      close: "16:00:00"
+      timezone: "America/New_York"
+    
+    crypto:
+      always_open: true
+
+# Order Execution
+execution:
+  # Order types supported
+  order_types:
+    - "market"
+    - "limit"
+    - "vwap_slice"
+  
+  # Retry configuration
+  retry:
+    max_attempts: 3
+    backoff_seconds: [1, 3, 9] # Exponential backoff
+  
+  # Order validation
+  validation:
+    check_buying_power: true
+    check_pdt_compliance: true
+    check_reserve_violation: true
+    check_position_limits: true
+    check_daily_drawdown: true
+  
+  # Client order ID (idempotency)
+  client_order_id:
+    enabled: true
+    prefix: "pt01"
+    include_timestamp: true
+
+# Logging
+logging:
+  level: "INFO" # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  
+  # File logging
+  file:
+    enabled: true
+    location: "logs/"
+    rotation: "daily"
+    retention_days: 90
+    
+    # Sensitive data handling
+    sanitize_secrets: true
+    sanitize_account_ids: false # Keep for audit
+  
+  # Trade logging (line-by-line)
+  trade_logging:
+    enabled: true
+    include_signal_context: true
+    include_risk_checks: true
+    include_order_details: true
+    include_fill_events: true
+    include_exit_reason: true
+
+# Reporting
+reporting:
+  # Daily reports
+  daily:
+    enabled: true
+    generation_time: "17:00:00" # ET
+    output_dir: "reports/daily/"
+    format: "json" # json | csv | html
+  
+  # Monday reports (weekly summary + dividend allocation)
+  monday:
+    enabled: true
+    generation_time: "09:00:00" # ET, before market open
+    output_dir: "reports/monday/"
+    format: "json"
+
+# Emergency Controls
+emergency:
+  # Halt all trading
+  kill_switch:
+    enabled: false # Set to true to immediately halt
+  
+  # Capital preservation mode
+  preservation_mode:
+    auto_trigger: true
+    trigger_conditions:
+      - "approaching_milestone_floor"
+      - "daily_drawdown_exceeded"
+      - "api_errors_threshold"
+    
+    behavior:
+      disable_new_entries: true
+      close_losing_positions: true
+      tighten_stops: true
+      notify_admin: true
+
+# Notifications
+notifications:
+  # Admin alerts
+  admin:
+    enabled: true
+    channels: ["log"] # log | email | sms | webhook
+    
+    triggers:
+      - "milestone_reached"
+      - "preservation_mode_activated"
+      - "pdt_unlocked"
+      - "daily_drawdown_limit"
+      - "api_error"
+      - "cash_release_executed"

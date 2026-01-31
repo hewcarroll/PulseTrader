@@ -1,0 +1,12 @@
+account_id: ""
+type: "main"
+name: "Primary Trading Account"
+
+risk:
+  per_trade_max: 15.0
+
+dividend:
+  allocation_tiers:
+    - equity_min: 5000
+      equity_max: 24999
+      weekly_percentage: 3.0

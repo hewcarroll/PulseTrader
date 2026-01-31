@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+loguru
+python-dotenv
+pydantic
+pandas
+yfinance
+requests
+PyJWT
+pyotp
+feedparser
+pytest

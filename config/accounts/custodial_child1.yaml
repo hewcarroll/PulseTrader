@@ -1,0 +1,12 @@
+account_id: "CHILD1_ACCOUNT_ID"
+type: "custodial"
+name: "Custodial Child 1"
+
+risk:
+  per_trade_max: 5.0
+
+dividend:
+  allocation_tiers:
+    - equity_min: 0
+      equity_max: 999999
+      weekly_percentage: 40.0

@@ -339,6 +339,13 @@ logging:
     include_fill_events: true
     include_exit_reason: true
 
+# Connection Health Monitoring
+monitoring:
+  # API health check configuration
+  health_check_interval: 60 # Seconds between health checks
+  error_threshold: 5 # Number of consecutive errors before triggering preservation mode
+  slow_response_threshold: 5.0 # Seconds - log warning if API response exceeds this
+
 # Reporting
 reporting:
   # Daily reports

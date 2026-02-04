@@ -27,6 +27,10 @@ from services.learning.performance_analyzer import PerformanceAnalyzer
 from services.jobs.daily_report import DailyReportJob
 from services.jobs.monday_allocation import MondayAllocationJob
 from services.jobs.eod_analysis import EODAnalysisJob
+from services.connectors.alpaca_client import AlpacaClient
+from services.connectors.connection_health_monitor import ConnectionHealthMonitor
+from services.connectors.websocket_client import WebSocketClient
+from services.utils.config_validator import validate_config, ConfigValidationError
 
 
 load_dotenv()
@@ -45,11 +49,45 @@ class PulseTraderOrchestrator:
 
         self._setup_logging()
 
+        # Validate configuration before initialization
+        try:
+            validate_config()
+            logger.info("Configuration validation successful")
+        except ConfigValidationError as e:
+            logger.critical(f"Configuration validation failed: {e}")
+            logger.critical("System startup halted due to invalid configuration")
+            raise
+
+        # Initialize AlpacaClient for real API integration
+        self.alpaca_client = AlpacaClient(self.config)
+        logger.info("AlpacaClient initialized")
+
+        # Initialize ConnectionHealthMonitor
+        self.health_monitor = ConnectionHealthMonitor(
+            alpaca_client=self.alpaca_client,
+            check_interval=self.config.get("monitoring", {}).get("health_check_interval", 60),
+            error_threshold=self.config.get("monitoring", {}).get("error_threshold", 5),
+            slow_response_threshold=self.config.get("monitoring", {}).get("slow_response_threshold", 5.0)
+        )
+        # Set preservation mode callback
+        self.health_monitor.set_preservation_mode_callback(self._enter_preservation_mode)
+        logger.info("ConnectionHealthMonitor initialized")
+
+        # Initialize WebSocketClient for real-time streaming
+        self.websocket_client = WebSocketClient(self.config)
+        logger.info("WebSocketClient initialized")
+
         self.state_manager = StateManager()
-        self.account_manager = AccountManager(self.config)
+        self.account_manager = AccountManager(self.config, self.alpaca_client)
         self.risk_manager = RiskManager(self.config)
-        self.order_manager = OrderManager(self.config)
-        self.market_data = MarketDataFeed(self.config)
+        self.market_data = MarketDataFeed(self.config, self.alpaca_client)
+        self.order_manager = OrderManager(
+            self.config,
+            self.alpaca_client,
+            self.account_manager,
+            self.market_data,
+            self.risk_manager
+        )
         self.performance_analyzer = PerformanceAnalyzer(self.config)
 
         self.strategies = self._initialize_strategies()
@@ -67,16 +105,49 @@ class PulseTraderOrchestrator:
         return config
 
     def _setup_logging(self) -> None:
+        """
+        Configure logging with support for LOG_LEVEL environment variable.
+        
+        The log level can be set via:
+        1. LOG_LEVEL environment variable (highest priority)
+        2. Configuration file logging.level setting
+        3. Default to INFO if neither is set
+        
+        Valid log levels: TRACE, DEBUG, INFO, SUCCESS, WARNING, ERROR, CRITICAL
+        """
+        import os
+        
+        # Get log level from environment variable or config
+        env_log_level = os.getenv("LOG_LEVEL")
+        config_log_level = self.config.get("logging", {}).get("level", "INFO")
+        
+        # Environment variable takes precedence
+        if env_log_level:
+            log_level = env_log_level.upper()
+            logger.info(f"Using log level from LOG_LEVEL environment variable: {log_level}")
+        else:
+            log_level = config_log_level.upper()
+        
+        # Validate log level
+        valid_levels = ["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"]
+        if log_level not in valid_levels:
+            logger.warning(
+                f"Invalid log level '{log_level}'. Valid levels: {', '.join(valid_levels)}. "
+                f"Defaulting to INFO."
+            )
+            log_level = "INFO"
+        
         log_config = self.config.get("logging", {})
-        log_level = log_config.get("level", "INFO")
         log_dir = Path(log_config.get("file", {}).get("location", "logs"))
 
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "trades").mkdir(exist_ok=True)
         (log_dir / "system").mkdir(exist_ok=True)
 
+        # Remove default logger
         logger.remove()
 
+        # Add console logger with configured level
         logger.add(
             sys.stdout,
             format=(
@@ -86,6 +157,7 @@ class PulseTraderOrchestrator:
             level=log_level,
         )
 
+        # Add system log file with configured level
         logger.add(
             log_dir / "system" / "pulsetrader_{time:YYYY-MM-DD}.log",
             rotation="00:00",
@@ -94,6 +166,7 @@ class PulseTraderOrchestrator:
             format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
         )
 
+        # Add trade log file (always DEBUG level for detailed trade tracking)
         logger.add(
             log_dir / "trades" / "trades_{time:YYYY-MM-DD}.log",
             rotation="00:00",
@@ -102,6 +175,8 @@ class PulseTraderOrchestrator:
             filter=lambda record: "trade" in record["extra"],
             format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {extra[trade_id]} | {message}",
         )
+        
+        logger.info(f"Logging configured with level: {log_level}")
 
     def _initialize_strategies(self) -> Dict[str, object]:
         strategies: Dict[str, object] = {}
@@ -221,6 +296,14 @@ class PulseTraderOrchestrator:
             await self.market_data.connect()
             logger.info("Market data feed connected")
 
+            # Connect WebSocket client for real-time streaming
+            await self.websocket_client.connect()
+            logger.info("WebSocket client connected")
+
+            # Start connection health monitoring
+            await self.health_monitor.start()
+            logger.info("Connection health monitoring started")
+
             for name, strategy in self.strategies.items():
                 if hasattr(strategy, "min_equity_required"):
                     if equity < strategy.min_equity_required:
@@ -240,6 +323,7 @@ class PulseTraderOrchestrator:
             logger.info("=" * 60)
             logger.info("PulseTrader.01 is LIVE")
             logger.info("=" * 60)
+            logger.success("System startup completed successfully")
 
             await self._run_loop()
 
@@ -318,6 +402,14 @@ class PulseTraderOrchestrator:
             for name, strategy in self.strategies.items():
                 await strategy.stop()
                 logger.info(f"Strategy '{name}' stopped")
+
+            # Stop connection health monitoring
+            await self.health_monitor.stop()
+            logger.info("Connection health monitoring stopped")
+
+            # Disconnect WebSocket client
+            await self.websocket_client.disconnect()
+            logger.info("WebSocket client disconnected")
 
             if self.config.get("emergency", {}).get("close_positions_on_shutdown", False):
                 await self.order_manager.close_all_positions()

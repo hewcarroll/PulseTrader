@@ -10,3 +10,5 @@ PyJWT
 pyotp
 feedparser
 pytest
+alpaca-py
+hypothesis
